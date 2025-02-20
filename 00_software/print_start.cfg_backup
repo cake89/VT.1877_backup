@@ -1,0 +1,145 @@
+#####################################################################
+#   print_start macro
+#####################################################################
+
+## *** THINGS TO UNCOMMENT: ***
+## Bed mesh (2 lines at 2 locations)
+## Z_TILT_ADJUST if your printer is a Trident
+## Quad gantry level if your printer is a V2
+## Nevermore - if you have one
+
+[gcode_macro _SET_FILAMENT_BASED_PROBE_OFFSET]
+gcode:
+  {% set offset = +0.00 %}
+  {% set type = Increase|string %}
+  {% set filament = params.FILAMENT|default('abs')|string|lower %}
+  {% if filament == 'pla' %}
+    {% set offset = +0.08 %}
+  {% elif filament == 'petg' %}
+    {% set offset = +0.00 %}
+  {% elif filament == 'pctg' %}
+    {% set offset = +0.00 %}
+  {% elif filament == 'tpu' %}
+    {% set offset = +0.00 %}
+  {% elif filament == 'asa' %}
+    {% set offset = +0.00 %}
+  {% endif %}
+
+  { action_respond_info('%s Probe Z-Offset adjustment (%s) for %s' % (type, offset, filament)) }
+  SET_GCODE_OFFSET Z={ offset }
+  
+
+[gcode_macro PRINT_START]
+gcode:
+  # This part fetches data from your slicer. Such as bed temp, extruder temp, chamber temp and size of your printer.
+  {% set target_bed = params.BED|int %}
+  {% set target_hotend = params.HOTEND|int %}
+  {% set target_chamber = params.CHAMBER|default(0)|int %}
+  {% set filament = params.FILAMENT|default('pla')|string|lower %}
+  {% set extruder = params.EXTRUDER|default(0)|int %}
+  {% set pa = params.PA|default(0)|float %}
+  {% set x_wait = printer.toolhead.axis_maximum.x|float / 2 %}
+  {% set y_wait = printer.toolhead.axis_maximum.y|float / 2 %}
+
+  _SET_FILAMENT_BASED_PROBE_OFFSET FILAMENT={filament}
+
+  #{% if pa > 0 %}
+  #  SET_PRESSURE_ADVANCE EXTRUDER=extruder SMOOTH_TIME={pa / 2}
+  #{% endif %}
+
+  SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE={pa}
+  SET_PRESSURE_ADVANCE EXTRUDER=extruder SMOOTH_TIME=0.015
+
+  # Homes the printer, sets absolute positioning and updates the Stealthburner leds.
+  STATUS_HOMING         # Sets SB-leds to homing-mode
+  G28                   # Full home (XYZ)
+  G90                   # Absolut position
+
+  #M104 S150             # Set hotend to no-ooze temp
+
+  ##  Uncomment for bed mesh (1 of 2)
+  BED_MESH_CLEAR        # Clears old saved bed mesh (if any)
+
+  # Checks if the bed temp is higher than 80C - if so then trigger a heatsoak.
+  {% if params.BED|int > 80 %}
+    SET_DISPLAY_TEXT MSG="Bed: {target_bed}C"           # Display info on display
+    STATUS_HEATING                                      # Set LEDs to heating-mode
+    M106 S255                                           # Turn on the PT-fan
+
+    ##  Uncomment if you have a Nevermore.
+    #SET_PIN PIN=nevermore VALUE=1                      # Turns on the nevermore
+
+    G1 X{x_wait} Y{y_wait} Z60 F9000                    # Goes to center of the bed
+    M190 S{target_bed}                                  # Sets the target temp for the bed
+    SET_DISPLAY_TEXT MSG="Heatsoak: {target_chamber}C"  # Displays info
+    TEMPERATURE_WAIT SENSOR="temperature_sensor chamber" MINIMUM={target_chamber}   # Waits for chamber to reach desired temp
+
+  # If the bed temp is not over 80c, then it skips the heatsoak and just heats up to set temp with a 5min soak
+  {% else %}
+    SET_DISPLAY_TEXT MSG="Bed: {target_bed}C"           # Displays info
+    STATUS_HEATING                                      # Sets SB-leds to heating-mode
+    G1 X{x_wait} Y{y_wait} Z60 F9000                    # Goes to center of the bed
+    M190 S{target_bed}                                  # Sets the target temp for the bed
+    SET_DISPLAY_TEXT MSG="Soak for 5min"                # Displays info
+    G4 P300000                                          # Waits 5 min for the bedtemp to stabilize
+  {% endif %}
+
+  # Heating nozzle to 150 degrees. This helps with getting a correct Z-home
+  #SET_DISPLAY_TEXT MSG="Hotend: 150C"          # Displays info
+  #M109 S150                                    # Heats the nozzle to 150c
+  #M104 S150                                    # Heats the nozzle to 150c
+
+  ##  Uncomment for Trident (Z_TILT_ADJUST)
+  SET_DISPLAY_TEXT MSG="Leveling"                      # Display info on display
+  STATUS_LEVELING                                      # Set LEDs to leveling-mode
+  
+  Attach_Probe_Lock
+  
+  Z_TILT_ADJUST                                        # Level the printer via Z_TILT_ADJUST
+  #G28 Z                                                # Home Z again after Z_TILT_ADJUST --> skipped here because already inside klicky z-tilt marco
+
+  ##  Uncomment for V2 (Quad gantry level AKA QGL)
+  #SET_DISPLAY_TEXT MSG="QGL"      # Displays info
+  #STATUS_LEVELING                 # Sets SB-leds to leveling-mode
+  #quad_gantry_level               # Levels the buildplate via QGL
+  #G28 Z                           # Homes Z again after QGL
+
+  ##  Uncomment for Klicky auto-z
+  #CALIBRATE_Z                                 # Calibrates Z-offset with klicky
+  #SET_DISPLAY_TEXT MSG="Z-offset"             # Displays info
+
+  ##  Uncomment for bed mesh (2 of 2)
+  SET_DISPLAY_TEXT MSG="Bed mesh"    # Displays info
+  STATUS_MESHING                     # Sets SB-leds to bed mesh-mode
+  BED_MESH_CALIBRATE ADAPTIVE=1      # Starts bed mesh
+  
+  Dock_Probe_Unlock
+
+  # Heats up the nozzle up to target via data from slicer
+  SET_DISPLAY_TEXT MSG="Hotend: {target_hotend}C"               # Displays info
+  STATUS_HEATING                                                # Sets SB-leds to heating-mode
+  #G1 X{x_wait} Y{y_wait} Z15 F9000                              # Goes to center of the bed
+  G0 Z20                                                        # hop up to prevent knocking probe off after homing Z                                                                
+  G1 Y20 X20 F10000                                             # move to starting position
+  M107                                                          # Turns off partcooling fan
+  M109 S{target_hotend}                                         # Heats the nozzle to printing temp
+
+  # Gets ready to print by doing a purge line and updating the SB-leds
+  #SET_DISPLAY_TEXT MSG="Printer goes brr"          # Displays info
+  #STATUS_PRINTING                                  # Sets SB-leds to printing-mode
+  #G0 X{x_wait - 50} Y4 F10000                      # Moves to starting point
+  #G0 Z0.4                                          # Raises Z to 0.4
+  #G91                                              # Incremental positioning 
+  #G1 E25 F1000                                     # Fill Nozzle with retracted filament 
+  #G1 X100 E20 F1000                                # Purge line
+  #G90                                              # Absolut position
+
+  # Gets ready to print by doing a purge line and updating the SB-leds
+  SET_DISPLAY_TEXT MSG="Printer goes brr"          # Displays info
+  STATUS_PRINTING                                  # Sets SB-leds to printing-mode
+  G91
+  G1 E4 F1000                                      # Fill nozzle with retracted filament 
+  G92 E0                                           # Reset extruder
+  LINE_PURGE
+  G92 E0                                           # Reset extruder
+  G1 Z2.0 F3000                                    # Move Z axis up
